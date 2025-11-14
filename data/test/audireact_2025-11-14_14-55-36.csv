@@ -1,0 +1,7 @@
+trial,side,RT_seconds,resp_status,timestamp
+1,right,0.775418,hit,14:55:45
+2,left,0.714239,hit,14:55:47
+3,right,0.859959,hit,14:55:50
+4,left,0.465782,hit,14:55:52
+5,left,0.360633,hit,14:55:55
+6,right,0.632471,hit,14:55:57

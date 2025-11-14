@@ -3,14 +3,33 @@
 # ============================================
 
 if __name__ == "__main__":
-    from psychopy import visual, core, event, sound, gui, prefs
+    from psychopy import visual, core, event, sound, gui, prefs, monitors
     import random, csv, time, os, datetime
     import numpy as np
+    import sounddevice as sd
+    
+    device_list = sd.query_devices()
+
+    # Extract output devices
+    output_devices = [
+        d['name'] for d in device_list
+        if d.get('max_output_channels') > 0
+    ]
+    # Safety fallback
+    if not output_devices:
+        output_devices = ["Default device only"]
   
     # ---------- Participant ID setup ----------
     # Create GUI dialog for participant info
-    info = {"Participant ID": ""}
-    dlg = gui.DlgFromDict(info, title="Participant Info")
+    info = {
+        "Participant ID": "",
+        "Audio Device": ["Select Audio Device"] + output_devices
+    }
+    
+    dlg = gui.DlgFromDict(
+        info,
+        title="Participant & Device Setup"
+    )
 
     # If user cancels, quit cleanly
     if not dlg.OK:
@@ -21,6 +40,18 @@ if __name__ == "__main__":
     if not participant_id:
         participant_id = "test"
         print("No ID entered — using 'test'")
+        
+    selected_device = info["Audio Device"]
+    
+    # If they left the placeholder, just warn and use default
+    if selected_device == "Select headphones":
+        print("⚠ No audio device selected — using system default.")
+    else:
+        prefs.hardware['audioDevice'] = selected_device
+        print(f"Using audio device: {selected_device}")
+        
+        prefs.hardware['audioDevice'] = selected_device
+        prefs.hardware['audiolib'] = ['PTB']  # force PTB backend
 
     # ---------- File setup ----------
     # Define main experiment folder
@@ -81,9 +112,6 @@ if __name__ == "__main__":
         core.wait(0.01)
 
     # ---------- Sound setup ----------
-    # prefs.hardware['audiolib'] = ['ptb', 'sounddevice', 'pyo'] # priority order
-    # prefs.hardware['audioDevice'] = 'Headphones (soundcore P30i)'  # use exact device name
-    
     # Generate white noise (random samples between -1 and 1)
     noise_samples = np.random.uniform(-1, 1, int(sr * noise_duration)) * amplitude
     

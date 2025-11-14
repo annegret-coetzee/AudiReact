@@ -22,11 +22,12 @@ The current version allows the researcher to **manually trigger stimuli** (ENTER
 
 - **Platform:** PsychoPy (Python)
 - **Stimulus control:** Manual tone triggering by the researcher
-- **Trial configuration:** Currently fixed at **6 trials** for development and debugging purposes; this value can easily be adjusted in the code (`n_trials` variable).  
-- **Tone distribution:** The left/right tones are **randomized but evenly balanced** across trials to avoid side bias.    
-- **Stereo tone generation:** Separate left/right sine waves ensure precise lateralization  
+- **Trial configuration:** Currently **6 trials** for debugging; adjustable via n_trials
+- **Tone distribution:** The left/right tones are are evenly balanced and then randomized
+- **Stereo tone generation:** True left-only and right-only sine waves
 - **Continuous white noise:** Maintains engagement and masks ambient sounds  
-- **Visual feedback:** Neutral “+” flash confirms button press without introducing affective bias  
+- **Visual feedback:** Neutral “+” flash confirms button press without introducing affective bias 
+- **Audio-device selection:** At startup, the GUI includes a dropdown menu listing all available output devices, allowing the user to explicitly select their headphones. This prevents cases where PsychoPy defaults to the wrong output device, which can suppress or misroute the tones.
 - **Data logging:** Each participant’s data (trial, side, RT, response status, timestamp) are stored automatically under `/data/<ParticipantID>/`  
   - If the **Participant ID** field is left empty, the program defaults to `data/test/`  
 - **Cross-platform:** Runs in PsychoPy on Windows, macOS, and Linux  
@@ -50,8 +51,10 @@ AudiReact/
 3. Load `audireact.py`.  
 4. Press **Run ▶**.  
 
-When prompted, either enter a **Participant ID** (e.g., `P01`).  
-If left blank, data are saved under `data/test/`.  
+A dialog will appear asking for:
+- Audio Device (dropdown list of available outputs)
+- Participant ID
+	-Leaving the ID blank results in files being saved under data/test/.
 
 > Note: Running the script outside of PsychoPy (e.g., in a standalone virtual environment) was tested but led to dependency conflicts between PsychoPy, NumPy, and many others. The PsychoPy application remains the most stable and portable option.
 > Note: The number of trials are set to 6 for testing purposes
@@ -64,4 +67,4 @@ If left blank, data are saved under `data/test/`.
 - Optional GUI for experiment setup and live monitoring  
 
 
-*Tested with PsychoPy 2024.2 on Windows 10.*
+*Tested with PsychoPy 2024.2 on Windows 11.*
