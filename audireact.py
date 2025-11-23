@@ -183,12 +183,40 @@ fixation.draw()
 win.flip()
 
 
-# ---------- Load pre-generated track ----------
-track_path = os.path.join(base_dir,"audireact_track.wav")
+# ---------- Load pre-generated track safely ----------
+track_path = os.path.join(base_dir, "audireact_track.wav")
 if not os.path.exists(track_path):
-    raise FileNotFoundError(f"Pre-generated track not found: {track_path}")
-track = sound.Sound(track_path)
-track.play()
+    try:
+        from audireact_track import generate_track
+        generate_track(track_path)
+    except Exception as e:
+        print(f"Error generating track: {e}")
+        win.close()
+        core.quit()
+
+# Verify the WAV file exists and is readable
+if not os.path.exists(track_path):
+    print(f"Track file still missing: {track_path}")
+    win.close()
+    core.quit()
+
+# Attempt to load the track
+try:
+    track = sound.Sound(track_path)
+except Exception as e:
+    print(f"Failed to load track: {e}")
+    win.close()
+    core.quit()
+
+# Attempt to play track
+try:
+    track.play()
+except Exception as e:
+    print(f"Failed to play track: {e}")
+    win.close()
+    core.quit()
+
+print("Track started successfully. Press ESC to quit at any time.")
 
 
 # ---------- Main trial loop ----------
