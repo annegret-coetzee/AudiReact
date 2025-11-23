@@ -100,5 +100,5 @@ def generate_track(track_path="audireact_track.wav"):
     track_samples = np.clip(track_samples, -1.0, 1.0)
 
     # ---------- Save as WAV ----------
-    sf.write(track_path, track_samples, sr, subtype='PMC_16')
+    sf.write(track_path, track_samples, sr)
     print(f"Track saved as {track_path}")
