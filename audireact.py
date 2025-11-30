@@ -1,114 +1,91 @@
-# ==============================================================================
-# Auditory reaction-time experiment (pre-generated track)
-# with NTP timestamps
-# ==============================================================================
+# audireact_v3_fixed.py
+import sounddevice as sd
+import soundfile as sf
+import numpy as np
+import time
+import datetime
+from psychopy import core, event, visual, gui
+from audigen import ensure_sound_file
+import os
+import random
+import csv
 
-from psychopy import prefs, visual, core, event, sound, gui
-import os, csv, datetime, time, random, numpy as np
+# ----------------- Participant Info -----------------
+info = {"Participant ID": ""}
+dlg = gui.DlgFromDict(info, title="Participant Info")
+if not dlg.OK:
+    core.quit()
+participant_id = info["Participant ID"].strip() or "test"
 
+# ----------------- Track Loading -----------------
+base_dir = os.path.dirname(__file__)
+track_path = os.path.join(base_dir, "audigen.wav")
+track_exists = ensure_sound_file(track_path)
 
-# ---------------------- NTP sync for grounded timestamps ----------------------
+# handle different possible return values from ensure_sound_file
+if not track_exists:
+    raise FileNotFoundError(f"Track not found or ensure_sound_file failed: {track_path}")
+# if ensure_sound_file returns a path string, accept that
+if isinstance(track_exists, str):
+    track_path = track_exists
+
+data, sr = sf.read(track_path, dtype="float32")
+if data.ndim == 1:
+    data = data[:, np.newaxis]  # make 2D (samples, channels)
+n_samples = data.shape[0]
+n_channels = data.shape[1]
+
+# ----------------- NTP Sync -----------------
 def sync_clock_offset():
-    """
-    Try to obtain an offset between system time and NTP time.
-    Returns offset in seconds: (NTP_UTC - local_system_time).
-    If anything fails (no internet, ntplib missing, etc.), returns 0.0.
-    """
     try:
         import ntplib
         c = ntplib.NTPClient()
         r = c.request("pool.ntp.org", version=3, timeout=3)
         offset = r.tx_time - time.time()
-        print(f"NTP clock offset: {offset:.6f} seconds (UTC - local)")
+        print(f"NTP clock offset: {offset:.6f} s")
         return offset
     except Exception as e:
-        print(f"Warning: NTP sync failed ({e}); using local system time only.")
+        print("NTP sync failed (ntplib missing or network issue). Using local system time.")
         return 0.0
 
-# Compute once at experiment start
 clock_offset = sync_clock_offset()
+PERF0 = time.perf_counter()
+NTP0 = time.time() + clock_offset
 
-def get_ntp_timestamp():
-    """
-    Return a NTP-grounded UTC timestamp string with milliseconds.
-    If NTP failed, this is just system time in UTC.
-    """
-    true_unix = time.time() + clock_offset
-    return datetime.datetime.utcfromtimestamp(true_unix).strftime("%Y-%m-%d %H:%M:%S.%f")
+def perf_to_ntp(perf_ts):
+    """Convert a perf_counter timestamp to unix UTC seconds (float)."""
+    return NTP0 + (perf_ts - PERF0)
 
+def ntp_str_from_perf(perf_ts):
+    unix_ts = perf_to_ntp(perf_ts)
+    return datetime.datetime.utcfromtimestamp(unix_ts).strftime("%Y-%m-%d %H:%M:%S.%f")
 
-#----------------------------- Audio Device Setup ------------------------------
-import sounddevice as sd
-
-# Use system default output device
-default_output_index = sd.default.device[1]  # [input, output], output is index 1
-device_info = sd.query_devices(default_output_index)
-device_name = device_info['name']
-
-# Feed PsychoPy PTB backend
-prefs.hardware['audioDevice'] = device_name
-prefs.hardware['audiolib'] = ['PTB']
-print(f"Using system default audio device: {device_name}")
-
-
-# ------------------------- Experiment parameters ------------------------------
-total_noise_duration = 600.0   # 10 minutes of white noise (seconds)
-freq = 440.0                   # tone freq (Hz)
-tone_duration = 0.2            # tone length (s)
-max_rt = 1.5                   # response window (s)
-fb_dur = 0.2                   # neutral feedback flash (s)
-
-# Intensity and interval choices
-volume_levels = [0.05, 0.10, 0.15]    
-interval_options = [2.0, 3.0, 4.0, 5.0] 
-
-# Combinations (volume x side) repeated equally
+# ----------------- Experiment Parameters -----------------
+total_noise_duration = 600.0  # seconds
+tone_duration = 0.2
+max_rt = 1.5
+fb_dur = 0.2
+volume_levels = [0.05, 0.10, 0.15]
+interval_options = [2.0, 4.0, 5.0, 7.0]
 sides_list = ["left", "right"]
-combos = [(v, s) for v in volume_levels for s in sides_list]  # 6 combos
-
-#Experiment-wide random seed (reproducible soundtrack)
 RANDOM_SEED = 12345
+
 random.seed(RANDOM_SEED)
 np.random.seed(RANDOM_SEED)
 
-# ------------------------Participant ID & File Setup---------------------------
-info = {"Participant ID": ""}
-dlg = gui.DlgFromDict(info, title="Participant Info")
-if not dlg.OK:
-    print("Experiment cancelled at participant ID entry.")
-    core.quit()
+# ----------------- Trial Schedule -----------------
+combos = [(v, s) for v in volume_levels for s in sides_list]
 
-participant_id = info["Participant ID"].strip()
-if not participant_id:
-    participant_id = "test"
-    print("No ID entered — using 'test'")
-
-base_dir = os.path.dirname(__file__)
-data_dir = os.path.join(base_dir,"data",participant_id)
-os.makedirs(data_dir, exist_ok=True)
-
-track_path = os.path.join(base_dir, "audireact_track.wav")
-
-# Auto-generate if missing
-if not os.path.exists(track_path):
-    from audireact_track import generate_track
-    generate_track(track_path)
-
-csv_path = os.path.join(data_dir,f"audireact_{datetime.datetime.now():%Y-%m-%d_%H-%M-%S}.csv")
-print(f"Data will be saved to: {csv_path}")
-
-
-
-# ---------------- Compute trial repeats and schedule intervals ----------------
 def compute_trial_schedule():
+    # Try increasing the number of repeats until schedule doesn't fit
     max_repeat = 0
     final_intervals = []
-    
-    for N in range(1, 1000):  # safety upper bound
+
+    for N in range(1, 1000):
         n_trials = len(combos) * N
-        # sample intervals reproducibly for this N
         sampled_intervals = [random.choice(interval_options) for _ in range(n_trials)]
-        total_time = sum(sampled_intervals) + tone_duration
+        # account for tone_duration for each trial
+        total_time = sum(sampled_intervals) + (n_trials * tone_duration)
         if total_time <= total_noise_duration:
             max_repeat = N
             final_intervals = sampled_intervals.copy()
@@ -117,204 +94,304 @@ def compute_trial_schedule():
 
     if max_repeat <= 0:
         max_repeat = 1
-        n_trials = len(combos) * max_repeat
-        final_intervals = [random.choice(interval_options) for _ in range(len(combos)*max_repeat)]
-    
-    # build combo pool
+        final_intervals = [random.choice(interval_options) for _ in range(len(combos) * max_repeat)]
+
     combo_pool = combos * max_repeat
-    # shuffle combo pool reproducibly
     random.shuffle(combo_pool)
-    
-    # assign intervals according to shuffled combo_pool length
+
     if len(final_intervals) != len(combo_pool):
-        # safety check
         final_intervals = [random.choice(interval_options) for _ in combo_pool]
 
-    # compute cumulative scheduled times
     cumulative = 0.0
     scheduled_times = []
     for inter in final_intervals:
         cumulative += inter
         scheduled_times.append(cumulative)
-    
-    # trim any trials that would exceed total_noise_duration
+
+    # make sure scheduled times fit within total_noise_duration (consider tone halfway)
     n_fit = sum(1 for t in scheduled_times if t + (tone_duration / 2.0) <= total_noise_duration)
     if n_fit < len(combo_pool):
-        print(f"Note: only {n_fit} of {len(combo_pool)} trials fit within {total_noise_duration}s. Trimming.")
         combo_pool = combo_pool[:n_fit]
-        final_intervals = final_intervals[:n_fit]
         scheduled_times = scheduled_times[:n_fit]
-    
-    return combo_pool, final_intervals, scheduled_times, max_repeat
 
-# Call the function once at experiment start
-combo_pool, intervals_assigned, scheduled_times, repeats = compute_trial_schedule()
+    return combo_pool, scheduled_times
+
+combo_pool, scheduled_times = compute_trial_schedule()
 n_trials = len(combo_pool)
 print(f"Experiment will have {n_trials} trials.")
 
+# ----------------- Option: overlay generated tones into the audio buffer -----------------
+# If audigen.wav already contains the target tones at correct moments, set OVERLAY_TONES=False.
+OVERLAY_TONES = False
 
-# ----------------------------- Visual setup -----------------------------------
+if OVERLAY_TONES:
+    # Create a copy of the audio buffer to mix tones into (do not modify original file)
+    mix = data.copy()
+    def generate_tone(freq=1000.0, dur=0.2, sr=sr, amplitude=0.1, side="left"):
+        t = np.arange(int(np.round(dur * sr))) / sr
+        tone = np.sin(2 * np.pi * freq * t) * amplitude
+        # build stereo panned version matching number of channels
+        if n_channels == 1:
+            return tone[:, np.newaxis]
+        else:
+            # panning: left-> (1,0), right->(0,1)
+            if side == "left":
+                stereo = np.stack([tone, np.zeros_like(tone)], axis=1)
+            elif side == "right":
+                stereo = np.stack([np.zeros_like(tone), tone], axis=1)
+            else:  # center
+                stereo = np.stack([tone, tone], axis=1)[:,:n_channels]
+            # if file has >2 channels, tile or truncate
+            if n_channels > 2:
+                # duplicate first two channels across remaining channels
+                extra = np.tile(stereo[:, :2], (1, n_channels//2))[:, :n_channels]
+                return extra
+            return stereo
+
+    # Choose frequency for the tone (set as needed)
+    tone_freq = 1000.0
+    for idx, scheduled_offset in enumerate(scheduled_times):
+        start_sample = int(round(scheduled_offset * sr))
+        tone_samples = int(round(tone_duration * sr))
+        side = combo_pool[idx][1]
+        volume = combo_pool[idx][0]
+        tone_sig = generate_tone(freq=tone_freq, dur=tone_duration, sr=sr, amplitude=volume, side=side)
+        end_sample = start_sample + tone_samples
+        if start_sample >= n_samples:
+            continue
+        if end_sample > n_samples:
+            # truncate tone if it would overrun file buffer
+            tone_sig = tone_sig[: n_samples - start_sample]
+            end_sample = n_samples
+        # mix: add tone into mix buffer (beware clipping)
+        if mix.shape[1] == tone_sig.shape[1]:
+            mix[start_sample:end_sample] += tone_sig
+        else:
+            # handle channel mismatch by repeating tone across channels
+            tone_rep = np.tile(tone_sig, (1, mix.shape[1] // tone_sig.shape[1] + 1))[:, :mix.shape[1]]
+            mix[start_sample:end_sample] += tone_rep
+
+    # guard against clipping: normalize if needed
+    peak = np.max(np.abs(mix))
+    if peak > 1.0:
+        print(f"Warning: audio peak {peak:.3f} > 1.0, normalizing to prevent clipping.")
+        mix = mix / peak
+
+    # replace data with mix for playback
+    data = mix.copy()
+    n_samples = data.shape[0]
+
+# ----------------- PsychoPy Setup -----------------
 win = visual.Window(fullscr=False, color="black", units="pix", allowGUI=False)
 fixation = visual.TextStim(win, text="+", color="white", height=50)
-instr_header = visual.TextStim(win, text="INSTRUCTIONS", color="white", height=48, pos=(0, 200))
-instr_body = visual.TextStim(win, text=(
-    "Participant: Press SPACE as quickly as possible when you hear a tone.\n\n"
-    "The track is fixed and will run for 10 minutes. You can stop anytime with ESC. \n\n"
-    "Press ENTER and the experiment will start shortly."
-), color="white", height=30, wrapWidth=600, pos=(0, -60), alignText='center')
-end_text = visual.TextStim(win, text="Experiment complete.\nThank you!", color="white", height=40)
-
-instr_header.draw()
-instr_body.draw()
+instr = visual.TextStim(
+    win,
+    text="Press SPACE as quickly as possible when you hear a tone.\nPress ENTER to start.",
+    color="white",
+    height=30,
+    wrapWidth=600,
+    pos=(0, -60),
+    alignText="center",
+)
+instr.draw()
 win.flip()
 
-# Allow ESC to quit at instruction page; ENTER to begin
+# wait for ENTER
 while True:
     keys = event.getKeys()
-    if 'escape' in keys:
-        print("Experiment aborted at intro screen.")
-        win.close()
-        core.quit()
-    if 'return' in keys:
+    if "return" in keys or "enter" in keys:
         break
+    elif "escape" in keys:
+        core.quit()
     core.wait(0.01)
 
 fixation.draw()
 win.flip()
 
+# ----------------- SoundDevice callback/state -----------------
+start_device_ts = None     # device clock time returned by callback (outputBufferDacTime)
+start_perf = None          # perf_counter time corresponding to the first callback
+audio_started_flag = False
+play_cursor = 0
 
-# ---------- Load pre-generated track safely ----------
-track_path = os.path.join(base_dir, "audireact_track.wav")
-if not os.path.exists(track_path):
-    try:
-        from audireact_track import generate_track
-        generate_track(track_path)
-    except Exception as e:
-        print(f"Error generating track: {e}")
-        win.close()
-        core.quit()
+def audio_callback(outdata, frames, time_info, status):
+    """
+    Write audio frames and capture the first-sample device timestamp.
+    time_info may contain 'outputBufferDacTime' or 'output_buffer_dac_time'
+    depending on platform/version; we attempt both.
+    """
+    global start_device_ts, start_perf, audio_started_flag, play_cursor
 
-# Verify the WAV file exists and is readable
-if not os.path.exists(track_path):
-    print(f"Track file still missing: {track_path}")
-    win.close()
-    core.quit()
+    # capture once
+    if not audio_started_flag:
+        ts = None
+        if isinstance(time_info, dict):
+            ts = time_info.get("outputBufferDacTime") or time_info.get("output_buffer_dac_time")
+        else:
+            try:
+                ts = getattr(time_info, "outputBufferDacTime", None)
+            except Exception:
+                ts = None
 
-# Attempt to load the track
-try:
-    track = sound.Sound(track_path)
-except Exception as e:
-    print(f"Failed to load track: {e}")
-    win.close()
-    core.quit()
+        if isinstance(ts, (float, int)):
+            start_device_ts = float(ts)
+            start_perf = time.perf_counter()
+            audio_started_flag = True
 
-# Attempt to play track
-try:
-    track.play()
-except Exception as e:
-    print(f"Failed to play track: {e}")
-    win.close()
-    core.quit()
+    # supply audio chunk
+    start = int(play_cursor)
+    end = start + frames
+    chunk = data[start:end]
 
-print("Track started successfully. Press ESC to quit at any time.")
+    if chunk.shape[0] < frames:
+        # final partial block: fill available frames then pad with zeros
+        outdata[: chunk.shape[0]] = chunk
+        outdata[chunk.shape[0] :] = 0.0
+        play_cursor += chunk.shape[0]
+        raise sd.CallbackStop()
+    else:
+        outdata[:] = chunk
+        play_cursor += frames
 
-
-# ---------- Main trial loop ----------
+# ----------------- Results and persistence -----------------
 results = []
-main_clock = core.Clock()
-start_time_local = time.time()
-start_ntp = get_ntp_timestamp()
-print(f"Track started at local time {datetime.datetime.fromtimestamp(start_time_local)} (NTP-UTC: {start_ntp})")
+data_dir = os.path.join(base_dir, "data")
+os.makedirs(data_dir, exist_ok=True)
+csv_path = os.path.join(data_dir, f"audireact_{participant_id}_{datetime.datetime.now():%Y-%m-%d_%H-%M-%S}.csv")
+
+# ----------------- Playback stream -----------------
+stream = sd.OutputStream(samplerate=sr, channels=data.shape[1], callback=audio_callback, blocksize=256)
 
 try:
-    for i in range(n_trials):
-        trial_number = i+1
-        side = combo_pool[i][1]
-        volume = combo_pool[i][0]
-        interval = intervals_assigned[i]
-        scheduled_time = scheduled_times[i]
+    stream.start()
+    # wait briefly for callback to capture device timestamp
+    t_start_wait = time.perf_counter()
+    timeout = 2.0  # seconds
+    while not audio_started_flag and (time.perf_counter() - t_start_wait) < timeout:
+        time.sleep(0.001)
 
-        # Wait until scheduled time
-        while main_clock.getTime() < scheduled_time:
+    if audio_started_flag:
+        print(f"Audio callback captured device timestamp: {start_device_ts}")
+        print(f"Corresponding perf timestamp: {start_perf:.6f}")
+        print("NTP start:", ntp_str_from_perf(start_perf))
+    else:
+        # fallback: use current perf time as start anchor
+        start_perf = time.perf_counter()
+        print("WARNING: audio callback did not provide device timestamp within timeout.")
+        print("Falling back to perf_counter anchor:", start_perf)
+        print("NTP start (fallback):", ntp_str_from_perf(start_perf))
+
+    print("Playback started — trials running")
+
+    # main trial loop (use perf times anchored to start_perf)
+    for i, scheduled_offset in enumerate(scheduled_times):
+        trial_number = i + 1
+        volume, side = combo_pool[i]  # note: combo_pool items are (volume, side)
+
+        target_perf = start_perf + scheduled_offset
+        # wait until target_perf, but allow ESC early termination and false-positive presses
+        while True:
+            now = time.perf_counter()
+            if now >= target_perf:
+                break
             keys = event.getKeys()
-            if 'escape' in keys:
+            if "escape" in keys:
                 raise KeyboardInterrupt
-            if 'space' in keys:
-                ts_fp = get_ntp_timestamp()
-                results.append([trial_number,"none","","",ts_fp,"","", "false_positive"])
-                flash = fixation
-                flash.height = 70
-                flash.draw()
+
+            if "space" in keys:
+                # false positive (pressed before scheduled onset)
+                ts = time.perf_counter()
+                ts_ntp = ntp_str_from_perf(ts)
+                # keep columns consistent with final CSV format:
+                # trial, side, volume, scheduled_timestamp_utc, response_timestamp_utc, RT_seconds, resp_status
+                results.append([trial_number, "none", "", "", ts_ntp, "", "false_positive"])
+
+                fixation.height = 70
+                fixation.draw()
                 win.flip()
                 core.wait(fb_dur)
-                flash.height = 50
-                flash.draw()
+                fixation.height = 50
+                fixation.draw()
                 win.flip()
-            core.wait(0.01)
 
-        # Record NTP timestamp exactly at tone playback
-        scheduled_ts_ntp = get_ntp_timestamp()
-        # In this case, the tone is already part of the pre-generated WAV, so we only log the timestamp
+                event.clearEvents()  # clear the SPACE press completely
 
-        rt_clock = core.Clock()
+        # At scheduled onset (device-anchored), compute NTP timestamp from perf
+        scheduled_perf = target_perf
+        scheduled_ts_ntp = ntp_str_from_perf(scheduled_perf)
+        print(f"Trial {trial_number} scheduled at NTP {scheduled_ts_ntp}")
+
+        # Collect RT: record perf timestamp when space pressed
         rt = None
-        resp_status = "hit"
-        response_ts_ntp = ""
-
-        while rt_clock.getTime() < max_rt and rt is None:
-            resp = event.getKeys(keyList=['space','escape'],timeStamped=rt_clock)
-            if resp:
-                key, rt = resp[0]
-                if key=='escape':
-                    raise KeyboardInterrupt
-                response_ts_ntp = get_ntp_timestamp()
+        response_perf = None
+        rt_deadline = scheduled_perf + max_rt
+        while time.perf_counter() < rt_deadline:
+            keys = event.getKeys()
+            if "escape" in keys:
+                raise KeyboardInterrupt
+            if "space" in keys:
+                response_perf = time.perf_counter()
+                rt = response_perf - scheduled_perf
+                # visual feedback
+                fixation.height = 70
+                fixation.draw()
+                win.flip()
+                core.wait(fb_dur)
+                fixation.height = 50
+                fixation.draw()
+                win.flip()
+                break
+            time.sleep(0.001)
 
         if rt is None:
             resp_status = "miss"
+            response_ts_ntp = ""
         else:
-            flash = fixation
-            flash.height = 70
-            flash.draw()
-            win.flip()
-            core.wait(fb_dur)
-            flash.height = 50
-            flash.draw()
-            win.flip()
+            resp_status = "hit"
+            response_ts_ntp = ntp_str_from_perf(response_perf)
 
-        rt_for_csv = "" if rt is None else f"{rt:.6f}"
         results.append([
             trial_number,
             side,
             f"{volume:.3f}",
-            f"{interval:.3f}",
             scheduled_ts_ntp,
             response_ts_ntp,
-            rt_for_csv,
-            resp_status
+            "" if rt is None else f"{rt:.6f}",
+            resp_status,
         ])
-        print(f"Trial {trial_number}/{n_trials} | Side:{side} Vol:{volume:.3f} Int:{interval:.1f}s | {resp_status} | RT={rt_for_csv}")
+        print(f"Trial {trial_number}/{n_trials} | Side:{side} Vol:{volume:.3f} | {resp_status} | RT={'' if rt is None else f'{rt:.4f}s'}")
 
-    print("All trials complete!")
-    track.stop()
-    end_text.draw()
-    win.flip()
-    core.wait(4)
+    print("All trials complete.")
+    # allow stream to finish naturally
+    time.sleep(0.2)
 
 except KeyboardInterrupt:
-    print("Experiment aborted early by ESC key.")
-    track.stop()
-    win.close()
-    core.quit()
+    print("Experiment terminated early by user (ESC).")
 
 finally:
-    with open(csv_path,'w',newline='') as f:
+    try:
+        stream.stop()
+    except Exception:
+        pass
+    try:
+        stream.close()
+    except Exception:
+        pass
+
+    # Save results (always)
+    with open(csv_path, "w", newline="") as f:
         writer = csv.writer(f)
         writer.writerow([
-            'trial','side','volume','interval_s',
-            'scheduled_timestamp_utc','response_timestamp_utc',
-            'RT_seconds','resp_status'
+            "trial",
+            "side",
+            "volume",
+            "scheduled_timestamp_utc",
+            "response_timestamp_utc",
+            "RT_seconds",
+            "resp_status",
         ])
         writer.writerows(results)
+
     print(f"Data saved to: {csv_path}")
 
     win.close()

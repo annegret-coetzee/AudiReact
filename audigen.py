@@ -1,12 +1,15 @@
 # ============================================
 # Generate full Auditory Reaction-Time track
 # ============================================
+import os
+import sys
+from pathlib import Path
 
-def generate_track(track_path="audireact_track.wav"):
+def generate_wav(output_path):
     import numpy as np
     import random
     import soundfile as sf
-
+    
     # ---------- Parameters ----------
     RANDOM_SEED = 12345
     random.seed(RANDOM_SEED)
@@ -17,7 +20,7 @@ def generate_track(track_path="audireact_track.wav"):
     freq = 440.0
     tone_duration = 0.2
     volume_levels = [0.05, 0.10, 0.15]
-    interval_options = [2.0, 3.0, 4.0, 5.0]
+    interval_options = [2.0, 4.0, 5.0, 7.0]
     sides_list = ["left", "right"]
 
     # ---------- Generate combos ----------
@@ -100,5 +103,44 @@ def generate_track(track_path="audireact_track.wav"):
     track_samples = np.clip(track_samples, -1.0, 1.0)
 
     # ---------- Save as WAV ----------
-    sf.write(track_path, track_samples, sr)
-    print(f"Track saved as {track_path}")
+    try:
+        sf.write(output_path, track_samples, sr)
+        print(f"✓ Track successfully saved as {output_path}")
+        return True 
+    except Exception as e:
+        print(f"✗ Error saving WAV file: {e}")
+        return False  
+        
+def ensure_sound_file(sound_path):
+    """
+    Check if WAV file exists, if not generate it
+    Returns the file path if successful, None if failed
+    """
+    sound_path = Path(sound_path)
+    
+    # Check if file exists and is valid
+    if sound_path.exists() and sound_path.stat().st_size > 0:
+        print(f"✓ Sound file already exists: {sound_path}")
+        return str(sound_path)
+    
+    print(f"✗ Sound file missing or invalid. Generating: {sound_path}")
+    
+    # Generate the file
+    success = generate_wav(str(sound_path))
+    
+    if success and sound_path.exists():
+        print(f"✓ Sound file ready: {sound_path}")
+        return str(sound_path)
+    else:
+        print(f"✗ Failed to generate sound file: {sound_path}")
+        return None
+        
+if __name__ == "__main__":
+    base_dir = os.path.dirname(__file__)
+    track_path = os.path.join(base_dir, "audigen.wav")
+    result = ensure_sound_file(track_path)
+    if result:
+        print("Standalone generation successful!")
+    else:
+        print("Standalone generation failed!")
+        sys.exit(1)
