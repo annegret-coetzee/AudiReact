@@ -8,94 +8,97 @@ It measures **reaction times (RTs)** to lateralized auditory tones (left vs. rig
 ## Purpose and Design
 
 The experiment investigates how respiratory phase modulates auditory perception and motor response timing.
-Participants hear a 10-minute track of continuous white noise punctuated by short tones of different volumes and lateralizations. They press the space bar as quickly as possible when they detect a tone.
+Participants hear continuous white noise punctuated by short 0.10-volume tones presented to either the left or right ear. They press the space bar as quickly as possible when they detect a tone.
 
-	-Independent variable: lateralization and volume of auditory tone
-	-Dependent variable: reaction time (RT) to the tone
-	-Data quality note: Wired headphones are recommended to avoid audio latency
+	-**Independent variable:** lateralization (left vs. right)
+	-**Control:** all tones use identical frequency and volume
+	-**Good practice:** wired headphones and belt recommended to minimize system audio latency
 
-The program automatically records misses and false positives, and each timestamp is NTP-grounded for precise cross-device synchronization.
+The program:
+	- Schedules each tone using high-resolution wall-clock time (perf_counter)
+	- Logs reactions with UTC-synchronized timestamps for cross-device alignment
+	- Records hits, misses, and false positives
 
 ---
 
 ## Implementation
+### Core technical design
+	- The experiment now uses a single audio output stream with real-time mixing:
+	- Continuous white noise is generated in the audio callback.
+	- Tone waveforms are injected at precise sample positions when scheduled.
+	- A fixed random seed ensures reproducible trial order.
+	
+### Stimulus configuration
+Tones:
+	- 440 Hz
+	- 0.2 s duration
+	- Base volume fixed at 0.10
+	- Presented either to left or right channel
 
-- **Platform:** PsychoPy (Python)
-- **Trial configuration:** 10-minute pre-generated auditory track with reproducible tone sequence
-- **Tone variations:** 
-	- Three volume levels (low, medium, high)
-	- Two lateralizations (left/right ear)
-	- All combinations repeated equally
-- **Randomized but reproducible sequence:** uses fixed random seed for cross-participant consistency
-- **Inter-tone intervals::** randomly drawn from four possible durations
-- **Continuous white noise:** Maintains engagement and masks ambient sounds  
-- **Visual feedback:** Neutral “+” flash confirms button press without introducing affective bias
-- **Misses and false positives:**
-	- Missed tones are recorded as “miss”
-	- Button presses before tones are recorded as “false positive”
-- **Audio output:** automatically uses system default; ensures reliable delivery   
-- **Cross-platform:** Runs in PsychoPy on Windows, macOS, and Linux  
+Intervals:
+	- Four possible durations, balanced across left and right
 
----
+Lateralization:
+	- Equal number of left and right tones
 
-## Data output
-Participant responses are logged automatically under /data/<ParticipantID>/.
+Scheduling:
+	- All intervals and sides are pre-randomized with balancing
+	- Sequence is reproducible across participants
 
-Each CSV row corresponds to a tone or a false-positive response, with the following fields:
+### Visual feedback
+Pressing space shows a brief neutral “+” flash to confirm detection without affecting arousal.
 
-| Column                    | Description                                                                     |
-| ------------------------- | ------------------------------------------------------------------------------- |
-| `trial`                   | Trial number (sequence of tones in the 10-min track)                            |
-| `side`                    | Ear in which the tone was played (`left`/`right`) or `none` for false positives |
-| `volume`                  | Tone volume (0.05, 0.10, 0.15)                                                  |
-| `interval_s`              | Inter-tone interval preceding this tone (seconds)                               |
-| `scheduled_timestamp_utc` | NTP-grounded timestamp when tone was scheduled/played                           |
-| `response_timestamp_utc`  | NTP-grounded timestamp of participant’s space-bar press                         |
-| `RT_seconds`              | Reaction time in seconds (blank if missed)                                      |
-| `resp_status`             | Response status: `hit`, `miss`, or `false_positive`                             |
+### Error classification
+	- Hit: response within the allowed window
+	- Miss: no response before the next tone
+	- False positive: button press when no tone is active
 
+## Data Output
+Each participant’s data is stored in: */data/<ParticipantID>/*
 
-Examples:
-Hit: participant responded to the tone within the allowed window.
-Miss: participant did not respond within the response window.
-False positive: participant pressed the space bar before the next tone.
+A CSV file logs one row per tone and one row per false-positive event.
 
-Using NTP-grounded timestamps ensures synchronization with external devices such as a breathing belt, allowing analysis of RTs relative to respiratory phase.
----
+| Column                    | Description                                              |
+| ------------------------- | -------------------------------------------------------- |
+| `trial`                   | Trial index (1…N)                                        |
+| `side`                    | `left` / `right` for tones, `none` for false positives   |                                                        |
+| `interval_s`              | Inter-tone interval preceding the tone                   |
+| `scheduled_timestamp_utc` | UTC timestamp when the tone **was scheduled and output** |
+| `response_timestamp_utc`  | UTC timestamp of the participant’s keypress              |
+| `RT_seconds`              | Reaction time in seconds (hit only)                      |
+| `resp_status`             | `hit`, `miss`, or `false_positive`                       |
+
+All timestamps are synchronized to system UTC, allowing future alignment with breathing-belt data.
 
 ## Folder Structure
-
 AudiReact/
-├── audireact.py # Main experiment script
-├── audireact_track.py     # Generates pre-computed auditory track if missing
-├── audireact_track.wav    # Pre-generated stimulus track (auto-created)
-├── data/ # Participant data output (auto-created)
-├── requirements.txt # Dependencies (for reference)
-└── README.md # This file
+├── audireact.py          # Main experiment (live scheduling architecture)
+├── data/                 # Output directory (auto-created)
+└── README.md             # This file
 
----
+*(Note: The old pre-generated track system has been removed.)*
 
 ## How to Run the Experiment
 
 1. Install [PsychoPy](https://www.psychopy.org/download.html).  
-2. Open **Coder view** (not Builder).  
+2. Open **Coder view**.  
 3. Load `audireact.py`.  
 4. Press **Run ▶**.  
 
-At startup, the program will:
-- Check if audireact_track.wav exists; if missing, it generates the 10-minute track automatically.
-- Use the system default audio output.
-- Prompt for Participant ID (blank defaults to test).
-
-**Note:** Wired headphones are recommended to minimize audio latency.
-**Note:** Timestamps are NTP-grounded for synchronization with external devices (e.g., breathing belt).
-**Note:** The tone sequence is reproducible, allowing cross-participant comparison.
+At startup, the script will:
+	- Prompt for Participant ID
+	- Pre-generate the balanced trial structure
+	- Start the continuous noise stream
+	- Schedule tones precisely based on real time
+	
+**Recommendation**: use wired headphones for accurate left–right localization and stable latency.
 ---
 
 ## Future Development
 
 - Integration with real-time breathing-belt input for phase-locked tone delivery
-- Adjustable parameters for tone frequency, volume levels, and inter-tone intervals
+- Direct coupling of tones to respiratory phase
+- Configurable parameters for intervals and balancing
 - Optional GUI for live monitoring and experiment setup
 
 Tested with PsychoPy 2024.2 on Windows 11.

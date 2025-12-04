@@ -1,2 +1,4 @@
-psychopy>=2024.2
 numpy
+sounddevice
+pandas
+python-dateutil

@@ -24,3 +24,8 @@ Thumbs.db
 .idea/
 *.swp
 *.swo
+
+# Data generated during experiments
+*.csv
+*.tsv
+*.log
