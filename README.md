@@ -10,9 +10,9 @@ It measures **reaction times (RTs)** to lateralized auditory tones (left vs. rig
 The experiment investigates how respiratory phase modulates auditory perception and motor response timing.
 Participants hear continuous white noise punctuated by short 0.10-volume tones presented to either the left or right ear. They press the space bar as quickly as possible when they detect a tone.
 
-	-**Independent variable:** lateralization (left vs. right)
-	-**Control:** all tones use identical frequency and volume
-	-**Good practice:** wired headphones and belt recommended to minimize system audio latency
+	-*Independent variable:* lateralization (left vs. right)
+	-*Control:* all tones use identical frequency and volume
+	-*Good practice:* wired headphones and belt recommended to minimize system audio latency
 
 The program:
 	- Schedules each tone using high-resolution wall-clock time (perf_counter)
@@ -29,19 +29,19 @@ The program:
 	- A fixed random seed ensures reproducible trial order.
 	
 ### Stimulus configuration
-Tones:
+#### Tones:
 	- 440 Hz
 	- 0.2 s duration
 	- Base volume fixed at 0.10
 	- Presented either to left or right channel
 
-Intervals:
+#### Intervals:
 	- Four possible durations, balanced across left and right
 
-Lateralization:
+#### Lateralization:
 	- Equal number of left and right tones
 
-Scheduling:
+#### Scheduling:
 	- All intervals and sides are pre-randomized with balancing
 	- Sequence is reproducible across participants
 
@@ -74,6 +74,7 @@ All timestamps are synchronized to system UTC, allowing future alignment with br
 AudiReact/
 ├── audireact.py          # Main experiment (live scheduling architecture)
 ├── data/                 # Output directory (auto-created)
+├── requirements.txt      # Dependencies
 └── README.md             # This file
 
 *(Note: The old pre-generated track system has been removed.)*
