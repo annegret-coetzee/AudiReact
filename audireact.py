@@ -32,7 +32,7 @@ participant_id = info["Participant ID"].strip() or "test"
 
 # ----------------- Parameters -----------------
 SR = 44100
-TOTAL_NOISE_DURATION = 600.0   # seconds
+TOTAL_NOISE_DURATION = 900.0   # seconds
 TONE_DURATION = 0.2            # seconds
 TONE_FREQ = 1000.0             # Hz
 FIXED_VOLUME = 0.10
