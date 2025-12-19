@@ -1,23 +1,9 @@
-# audireact_v5_sampleaccurate.py
-"""
-Sample-accurate auditory reaction-time experiment.
-
-Single sounddevice OutputStream plays continuous noise and mixes
-precomputed stereo tone buffers on demand. The callback provides
-a device DAC timestamp which we map to time.perf_counter() so
-we obtain an *actual* onset timestamp for each tone.
-
-CSV includes planned scheduled timestamp (UTC), actual onset (UTC),
-RT in seconds, and hit/miss/false_positive status.
-"""
 import os
 import time
 import datetime
 import random
 import csv
 import threading
-from pathlib import Path
-
 import numpy as np
 import sounddevice as sd
 import soundfile as sf
@@ -41,9 +27,15 @@ RANDOM_SEED = 12345
 BLOCKSIZE = 256                # callback block size
 FB_DUR = 0.2                   # visual feedback duration
 MAX_RT = 1.5
+RAMP_DUR = 0.005  # 5 ms
+RAMP_SAMPLES = int(RAMP_DUR * SR)
+NOISE_ATTEN = 0.3
+
 
 random.seed(RANDOM_SEED)
 np.random.seed(RANDOM_SEED)
+
+
 
 # ----------------- Balanced schedule (equal L/R and balanced intervals) -----------------
 def compute_balanced_schedule(total_noise_duration=TOTAL_NOISE_DURATION,
@@ -128,48 +120,57 @@ def perf_to_ntp_str(perf_ts, perf_anchor_perf, perf_anchor_ntp):
     unix_ts = perf_anchor_ntp + offset_sec
     return datetime.datetime.utcfromtimestamp(unix_ts).strftime("%Y-%m-%d %H:%M:%S.%f")
 
-# We'll capture NTP offset once at start to provide UTC strings (optional)
+# ----------------- Stable NTP-anchored timestamping -----------------
+
 def sync_clock_offset():
+    """
+    One-shot NTP offset estimation.
+    Used ONLY to establish a UTC anchor at experiment start.
+    """
     try:
         import ntplib
         c = ntplib.NTPClient()
         r = c.request("pool.ntp.org", version=3, timeout=3)
-        offset = r.tx_time - time.time()
-        return offset
+        return r.tx_time - time.time()
     except Exception:
         return 0.0
 
-clock_offset = sync_clock_offset()
-PERF0 = time.perf_counter()
-NTP0 = time.time() + clock_offset
 
-def perf_to_ntpstr(perf_ts):
-    unix_ts = NTP0 + (perf_ts - PERF0)
-    return datetime.datetime.utcfromtimestamp(unix_ts).strftime("%Y-%m-%d %H:%M:%S.%f")
+# Capture a SINGLE anchor pair at experiment start
+NTP_OFFSET = sync_clock_offset()
+
+PERF_ANCHOR = time.perf_counter()
+UTC_ANCHOR = time.time() + NTP_OFFSET
+
+
+def perf_to_utc_timestamp(perf_ts):
+    """
+    Convert a perf_counter timestamp to a UTC datetime string
+    using a fixed anchor. Immune to system clock jumps.
+    """
+    unix_ts = UTC_ANCHOR + (perf_ts - PERF_ANCHOR)
+    return datetime.datetime.utcfromtimestamp(unix_ts).strftime(
+        "%Y-%m-%d %H:%M:%S.%f"
+    )
+
 
 # ----------------- Audio callback (single stream: noise + optional tone mix) -----------------
 def audio_callback(outdata, frames, time_info, status):
-    """
-    outdata: (frames, channels)
-    time_info contains 'outputBufferDacTime' (device clock seconds for first sample)
-    """
     global noise_cursor, device_start_dac, device_start_perf
     global tone_slot, tone_cursor, last_onset_perf, audio_started_flag
 
-    # initialize device/perf anchor at first callback
+    # --- DAC timestamp handling ---
     dac_ts = None
     try:
         if isinstance(time_info, dict):
-            dac_ts = time_info.get("outputBufferDacTime") or time_info.get("output_buffer_dac_time")
+            dac_ts = time_info.get("outputBufferDacTime")
         else:
             dac_ts = getattr(time_info, "outputBufferDacTime", None)
     except Exception:
-        dac_ts = None
+        pass
 
     if dac_ts is None:
-        # if time_info did not supply DAC time, still proceed but we lose sample-accurate mapping
-        # fill with zeros to be safe
-        outdata[:] = np.zeros((frames, 2), dtype="float32")
+        outdata[:] = 0
         return
 
     if device_start_dac is None:
@@ -177,38 +178,47 @@ def audio_callback(outdata, frames, time_info, status):
         device_start_perf = time.perf_counter()
         audio_started_flag = True
 
-    # write noise chunk (looping)
+    # --- noise bed ---
     end = noise_cursor + frames
     if end <= noise_len:
         out_chunk = noise_stereo[noise_cursor:end].copy()
-        noise_cursor = end
-        if noise_cursor >= noise_len:
-            noise_cursor = noise_cursor % noise_len
+        noise_cursor = end % noise_len
     else:
-        # wrap-around
-        part1 = noise_stereo[noise_cursor:noise_len]
-        part2 = noise_stereo[0:end - noise_len]
+        part1 = noise_stereo[noise_cursor:]
+        part2 = noise_stereo[:end - noise_len]
         out_chunk = np.vstack((part1, part2)).copy()
         noise_cursor = end - noise_len
 
-    # mix in tone if present
+    # --- copy shared tone state ---
     with state_lock:
         local_tone = tone_slot
         local_tone_cursor = tone_cursor
 
+    # --- tone + cosine-ramped noise dip ---
     if local_tone is not None:
-        # how many tone samples available
         tone_remaining = local_tone.shape[0] - local_tone_cursor
         to_write = min(frames, tone_remaining)
-        # add tone fragment into out_chunk
+
+        idx = np.arange(local_tone_cursor, local_tone_cursor + to_write)
+        atten = np.full(to_write, NOISE_ATTEN, dtype=np.float32)
+
+        onset = idx < RAMP_SAMPLES
+        atten[onset] = 1 - (1 - NOISE_ATTEN) * 0.5 * (
+            1 - np.cos(np.pi * idx[onset] / RAMP_SAMPLES)
+        )
+
+        offset = idx > (local_tone.shape[0] - RAMP_SAMPLES)
+        tail = idx[offset] - (local_tone.shape[0] - RAMP_SAMPLES)
+        atten[offset] = 1 - (1 - NOISE_ATTEN) * 0.5 * (
+            1 + np.cos(np.pi * tail / RAMP_SAMPLES)
+        )
+
+        out_chunk[:to_write] *= atten[:, None]
         out_chunk[:to_write] += local_tone[local_tone_cursor:local_tone_cursor + to_write]
-        # update shared cursor and possibly clear tone
+
         with state_lock:
             tone_cursor += to_write
-            # compute onset perf at the first block where tone_cursor was zero (i.e., local_tone_cursor == 0)
             if local_tone_cursor == 0:
-                # device DAC time corresponds to the first sample of out_chunk (this callback)
-                # compute perf timestamp for first sample in out_chunk:
                 onset_perf = device_start_perf + (float(dac_ts) - float(device_start_dac))
                 last_onset_perf = onset_perf
                 last_onset_event.set()
@@ -216,9 +226,10 @@ def audio_callback(outdata, frames, time_info, status):
                 tone_slot = None
                 tone_cursor = 0
 
-    # guard against clipping
+    # --- safety ---
     np.clip(out_chunk, -1.0, 1.0, out=out_chunk)
     outdata[:] = out_chunk
+
 
 # ----------------- Set up stream -----------------
 stream = sd.OutputStream(samplerate=SR, channels=2, callback=audio_callback, blocksize=BLOCKSIZE, dtype="float32")
@@ -256,6 +267,13 @@ data_dir = os.path.join(os.path.dirname(__file__), "data")
 os.makedirs(data_dir, exist_ok=True)
 csv_path = os.path.join(data_dir, f"audireact_{participant_id}_{datetime.datetime.now():%Y-%m-%d_%H-%M-%S}.csv")
 
+# Save anchors for audit/debug
+anchor_info = {
+    "perf_anchor": PERF_ANCHOR,
+    "utc_anchor": UTC_ANCHOR,
+    "ntp_offset": NTP_OFFSET
+}
+
 # ----------------- Start audio and run trials -----------------
 try:
     stream.start()
@@ -267,32 +285,28 @@ try:
     if not audio_started_flag:
         # fallback: set anchors so mapping functions don't break (less accurate)
         device_start_perf = time.perf_counter()
-        device_start_dac = 0.0
         print("WARNING: device DAC timestamp not available; timing less accurate.")
     else:
         print("Audio callback supplied device/perf anchor.")
 
     start_perf = device_start_perf  # anchor for scheduling planned offsets
-
     print("Playback started — running trials.")
 
     for i, scheduled_offset in enumerate(scheduled_times):
         trial_number = i + 1
         side = combo_sides[i]
         planned_perf = start_perf + scheduled_offset
+        scheduled_offset_s = scheduled_offset  # already relative to start_perf
 
-        # WAIT before scheduled onset: allow false positives
-        while True:
-            now = time.perf_counter()
-            if now >= planned_perf:
-                break
+        # WAIT until planned onset
+        while time.perf_counter() < planned_perf:
             keys = event.getKeys()
             if "escape" in keys:
                 raise KeyboardInterrupt
             if "space" in keys:
                 ts = time.perf_counter()
-                ts_ntp = perf_to_ntpstr(ts)
-                results.append([trial_number, "none", "", ts_ntp, "", "", "false_positive"])
+                ts_ntp = perf_to_utc_timestamp(ts)
+                results.append([trial_number, "none", "", ts_ntp, "", "", "false_positive", None, None, None])
                 fixation.height = 70
                 fixation.draw()
                 win.flip()
@@ -301,92 +315,71 @@ try:
                 fixation.draw()
                 win.flip()
                 event.clearEvents()
-            # micro-sleep to keep CPU reasonable
             time.sleep(0.0008)
 
-        # At planned time: schedule tone by placing it into tone_slot
+        # schedule tone
         with state_lock:
-            if side == "left":
-                tone_slot = tone_left.copy()
-            else:
-                tone_slot = tone_right.copy()
+            tone_slot = tone_left.copy() if side == "left" else tone_right.copy()
             tone_cursor = 0
             last_onset_event.clear()
             last_onset_perf = None
 
-        # busy-wait *only* until callback sets last_onset_perf (should happen imminently)
-        # However, to ensure we don't deadlock, we wait up to a small timeout
-        onset_timeout = 1.0  # seconds
-        onset_happened = last_onset_event.wait(timeout=onset_timeout)
-        if not onset_happened:
-            # very unusual: callback didn't report onset in time
-            actual_onset_perf = None
-            print(f"Warning: no onset reported for trial {trial_number}")
-        else:
+        # wait for onset callback
+        onset_timeout = 1.0
+        if last_onset_event.wait(timeout=onset_timeout):
             with state_lock:
                 actual_onset_perf = last_onset_perf
+            actual_onset_offset_s = actual_onset_perf - start_perf
+        else:
+            actual_onset_perf = None
+            actual_onset_offset_s = None
 
-        scheduled_ts_ntp = perf_to_ntpstr(planned_perf)
-        actual_onset_ts_ntp = perf_to_ntpstr(actual_onset_perf) if actual_onset_perf is not None else ""
+        scheduled_ts_utc = perf_to_utc_timestamp(planned_perf)
+        actual_onset_ts_utc = perf_to_utc_timestamp(actual_onset_perf) if actual_onset_perf else ""
 
-        # collect RT within MAX_RT seconds after actual_onset_perf (if available), else use planned
-        rt = None
+        # --- Collect response & RT ---
         response_perf = None
-        if actual_onset_perf is not None:
-            rt_deadline = actual_onset_perf + MAX_RT
-            while time.perf_counter() < rt_deadline:
-                keys = event.getKeys()
-                if "escape" in keys:
-                    raise KeyboardInterrupt
-                if "space" in keys:
-                    response_perf = time.perf_counter()
-                    rt = response_perf - actual_onset_perf
-                    # feedback
-                    fixation.height = 70
-                    fixation.draw()
-                    win.flip()
-                    core.wait(FB_DUR)
-                    fixation.height = 50
-                    fixation.draw()
-                    win.flip()
-                    break
-                time.sleep(0.0008)
-        else:
-            # fallback: use planned perf for RT window
-            rt_deadline = planned_perf + MAX_RT
-            while time.perf_counter() < rt_deadline:
-                keys = event.getKeys()
-                if "escape" in keys:
-                    raise KeyboardInterrupt
-                if "space" in keys:
-                    response_perf = time.perf_counter()
-                    rt = response_perf - planned_perf
-                    fixation.height = 70
-                    fixation.draw()
-                    win.flip()
-                    core.wait(FB_DUR)
-                    fixation.height = 50
-                    fixation.draw()
-                    win.flip()
-                    break
-                time.sleep(0.0008)
+        rt = None
+        rt_anchor = actual_onset_perf if actual_onset_perf is not None else planned_perf
+        rt_deadline = rt_anchor + MAX_RT
 
-        if rt is None:
-            resp_status = "miss"
-            response_ts_ntp = ""
-        else:
+        while time.perf_counter() < rt_deadline:
+            keys = event.getKeys()
+            if "escape" in keys:
+                raise KeyboardInterrupt
+            if "space" in keys:
+                response_perf = time.perf_counter()
+                rt = response_perf - rt_anchor
+                fixation.height = 70
+                fixation.draw()
+                win.flip()
+                core.wait(FB_DUR)
+                fixation.height = 50
+                fixation.draw()
+                win.flip()
+                break
+            time.sleep(0.0008)
+
+        if response_perf is not None:
+            response_offset_s = response_perf - start_perf
             resp_status = "hit"
-            response_ts_ntp = perf_to_ntpstr(response_perf)
+            response_ts_utc = perf_to_utc_timestamp(response_perf)
+        else:
+            response_offset_s = None
+            resp_status = "miss"
+            response_ts_utc = ""
 
-        # save result row: trial, side, scheduled_ts, actual_onset_ts, response_ts, RT, resp_status
         results.append([
             trial_number,
             side,
-            scheduled_ts_ntp,
-            actual_onset_ts_ntp,
-            response_ts_ntp,
+            scheduled_ts_utc,
+            actual_onset_ts_utc,
+            response_ts_utc,
             "" if rt is None else f"{rt:.6f}",
-            resp_status
+            resp_status,
+            scheduled_offset_s,
+            actual_onset_offset_s,
+            response_offset_s
         ])
 
         print(f"Trial {trial_number}/{n_trials} | Side:{side} | {resp_status} | RT={'' if rt is None else f'{rt:.4f}s'}")
@@ -407,7 +400,7 @@ finally:
     except Exception:
         pass
 
-    # Save results
+    # ----------------- Save CSV -----------------
     with open(csv_path, "w", newline="") as f:
         w = csv.writer(f)
         w.writerow([
@@ -417,7 +410,10 @@ finally:
             "actual_onset_timestamp_utc",
             "response_timestamp_utc",
             "RT_seconds",
-            "resp_status"
+            "resp_status",
+            "scheduled_offset_s",
+            "actual_onset_offset_s",
+            "response_offset_s"
         ])
         w.writerows(results)
 

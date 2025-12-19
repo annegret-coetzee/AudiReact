@@ -71,12 +71,12 @@ A CSV file logs one row per tone and one row per false-positive event.
 All timestamps are synchronized to system UTC, allowing future alignment with breathing-belt data.
 
 ## Folder Structure
-AudiReact/
+```textAudiReact/AudiReact/
 ├── audireact.py          # Main experiment (live scheduling architecture)
 ├── data/                 # Output directory (auto-created)
 ├── requirements.txt      # Dependencies
 └── README.md             # This file
-
+```
 *(Note: The old pre-generated track system has been removed.)*
 
 ## How to Run the Experiment
